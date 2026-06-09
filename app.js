@@ -1,6 +1,22 @@
-const TODO_KEY = "todoRoadmap.tasks";
-const ROADMAP_KEY = "todoRoadmap.goals";
-const GOAL_TREE_KEY = "todoRoadmap.goalTree";
+const STORAGE_KEYS = {
+  todos: "todoRoadmap.tasks",
+  roadmap: "todoRoadmap.goals",
+  goalTree: "todoRoadmap.goalTree",
+  supabase: "personalCeo.supabaseConfig",
+  syncMeta: "personalCeo.syncMeta"
+};
+
+const ROADMAP_LABELS = {
+  finalGoal: "最終目標",
+  oneYear: "1年後",
+  sixMonths: "半年後",
+  threeMonths: "3ヶ月後",
+  thisMonth: "今月",
+  today: "今日",
+  none: "なし"
+};
+
+const ROADMAP_ORDER = ["finalGoal", "oneYear", "sixMonths", "threeMonths", "thisMonth", "today"];
 
 const tabs = document.querySelectorAll(".tab-button");
 const panels = document.querySelectorAll(".tab-panel");
@@ -27,20 +43,25 @@ const titleInput = document.querySelector("#titleInput");
 const categoryInput = document.querySelector("#categoryInput");
 const priorityInput = document.querySelector("#priorityInput");
 const dueInput = document.querySelector("#dueInput");
+const roadmapLinkInput = document.querySelector("#roadmapLinkInput");
 const urlInput = document.querySelector("#urlInput");
 const memoInput = document.querySelector("#memoInput");
+const exportBackupButton = document.querySelector("#exportBackup");
+const importBackupButton = document.querySelector("#importBackupButton");
+const importBackupInput = document.querySelector("#importBackupInput");
+const dataMessage = document.querySelector("#dataMessage");
+const supabaseUrlInput = document.querySelector("#supabaseUrlInput");
+const supabaseAnonKeyInput = document.querySelector("#supabaseAnonKeyInput");
+const saveSupabaseConfigButton = document.querySelector("#saveSupabaseConfig");
+const testSupabaseConnectionButton = document.querySelector("#testSupabaseConnection");
+const syncNowButton = document.querySelector("#syncNow");
+const syncStatus = document.querySelector("#syncStatus");
 
-let todos = loadData(TODO_KEY, []).map(normalizeTodo);
-const oldRoadmap = loadData(ROADMAP_KEY, {});
-let goalTree = {
-  finalGoal: "",
-  oneYear: oldRoadmap.oneYear || "",
-  sixMonths: oldRoadmap.sixMonths || "",
-  threeMonths: oldRoadmap.threeMonths || "",
-  thisMonth: oldRoadmap.thisMonth || "",
-  today: "",
-  ...loadData(GOAL_TREE_KEY, {})
-};
+let todos = [];
+let goalTree = {};
+let supabaseConfig = {};
+let syncTimer = null;
+let suppressSync = false;
 let editingId = null;
 
 function loadData(key, fallback) {
@@ -52,6 +73,56 @@ function loadData(key, fallback) {
   }
 }
 
+function saveData(key, value) {
+  localStorage.setItem(key, JSON.stringify(value));
+  if (key !== STORAGE_KEYS.syncMeta) {
+    localStorage.setItem(STORAGE_KEYS.syncMeta, JSON.stringify({ updatedAt: new Date().toISOString() }));
+  }
+  if (!suppressSync && key !== STORAGE_KEYS.supabase && key !== STORAGE_KEYS.syncMeta) {
+    scheduleSupabaseSync();
+  }
+}
+
+function loadAppData() {
+  const oldRoadmap = loadData(STORAGE_KEYS.roadmap, {});
+  todos = loadData(STORAGE_KEYS.todos, []).map(normalizeTodo);
+  goalTree = {
+    finalGoal: "",
+    oneYear: oldRoadmap.oneYear || "",
+    sixMonths: oldRoadmap.sixMonths || "",
+    threeMonths: oldRoadmap.threeMonths || "",
+    thisMonth: oldRoadmap.thisMonth || "",
+    today: "",
+    ...loadData(STORAGE_KEYS.goalTree, {})
+  };
+  supabaseConfig = loadData(STORAGE_KEYS.supabase, { url: "", anonKey: "" });
+}
+
+function getAllStoredData() {
+  return {
+    [STORAGE_KEYS.todos]: todos,
+    [STORAGE_KEYS.roadmap]: loadData(STORAGE_KEYS.roadmap, {}),
+    [STORAGE_KEYS.goalTree]: goalTree,
+    [STORAGE_KEYS.supabase]: supabaseConfig
+  };
+}
+
+function applyStoredData(data, updatedAt = new Date().toISOString()) {
+  suppressSync = true;
+  Object.entries(data).forEach(([key, value]) => {
+    if (Object.values(STORAGE_KEYS).includes(key) && key !== STORAGE_KEYS.syncMeta) {
+      localStorage.setItem(key, JSON.stringify(value));
+    }
+  });
+  localStorage.setItem(STORAGE_KEYS.syncMeta, JSON.stringify({ updatedAt }));
+  suppressSync = false;
+  loadAppData();
+}
+
+function saveTodos() {
+  saveData(STORAGE_KEYS.todos, todos);
+}
+
 function normalizeTodo(todo) {
   return {
     id: todo.id || crypto.randomUUID(),
@@ -59,6 +130,7 @@ function normalizeTodo(todo) {
     category: normalizeCategory(todo.category),
     priority: normalizePriority(todo.priority),
     due: todo.due || "",
+    roadmapLink: normalizeRoadmapLink(todo.roadmapLink),
     url: todo.url || "",
     memo: todo.memo || "",
     done: Boolean(todo.done),
@@ -77,15 +149,15 @@ function normalizePriority(priority) {
   return priorities.includes(priority) ? priority : "中";
 }
 
-function saveTodos() {
-  localStorage.setItem(TODO_KEY, JSON.stringify(todos));
+function normalizeRoadmapLink(link) {
+  return [...ROADMAP_ORDER, "none"].includes(link) ? link : "none";
 }
 
 function saveGoalTree(closeEditor = false) {
   goalFields.forEach((field) => {
     goalTree[field.dataset.goal] = field.value.trim();
   });
-  localStorage.setItem(GOAL_TREE_KEY, JSON.stringify(goalTree));
+  saveData(STORAGE_KEYS.goalTree, goalTree);
   renderRoadmap();
   renderToday();
   if (closeEditor) roadmapForm.classList.add("hidden");
@@ -97,6 +169,7 @@ function getFormTodo(formData) {
     category: formData.get("category"),
     priority: formData.get("priority"),
     due: formData.get("due"),
+    roadmapLink: formData.get("roadmapLink"),
     url: formData.get("url").trim(),
     memo: formData.get("memo").trim()
   };
@@ -153,10 +226,11 @@ function getFocusTodos() {
   return todos
     .filter((todo) => !todo.done)
     .sort((a, b) => {
+      const todayDiff = Number(b.roadmapLink === "today") - Number(a.roadmapLink === "today");
       const priorityDiff = getPriorityScore(b.priority) - getPriorityScore(a.priority);
       const dueA = a.due ? getDaysUntil(a.due) : Number.MAX_SAFE_INTEGER;
       const dueB = b.due ? getDaysUntil(b.due) : Number.MAX_SAFE_INTEGER;
-      return priorityDiff || dueA - dueB;
+      return todayDiff || priorityDiff || dueA - dueB;
     })
     .slice(0, 3);
 }
@@ -210,6 +284,7 @@ function renderTodos() {
             <span class="badge">${todo.category}</span>
             <span class="badge priority-${getPriorityClass(todo.priority)}">${todo.priority}</span>
             <span class="badge due-${getDueState(todo.due)}">${getDueLabel(todo)}</span>
+            <span class="badge link-badge">${ROADMAP_LABELS[todo.roadmapLink]}</span>
           </div>
         </div>
         <div class="card-actions">
@@ -232,6 +307,7 @@ function renderTodos() {
 
   renderToday();
   renderDoneLog();
+  renderRoadmap();
   renderHeaderCounts();
 }
 
@@ -244,10 +320,8 @@ function renderToday() {
 }
 
 function renderHeaderCounts() {
-  const active = todos.filter((todo) => !todo.done).length;
-  const done = todos.filter((todo) => todo.done).length;
-  totalCount.textContent = `未完了 ${active}`;
-  doneCount.textContent = `完了 ${done}`;
+  totalCount.textContent = `未完了 ${todos.filter((todo) => !todo.done).length}`;
+  doneCount.textContent = `完了 ${todos.filter((todo) => todo.done).length}`;
 }
 
 function renderDoneLog() {
@@ -302,21 +376,28 @@ function renderRoadmap() {
     field.value = goalTree[field.dataset.goal] || "";
   });
 
-  const items = [
-    ["最終目標", goalTree.finalGoal],
-    ["1年後", goalTree.oneYear],
-    ["半年後", goalTree.sixMonths],
-    ["3ヶ月後", goalTree.threeMonths],
-    ["今月", goalTree.thisMonth],
-    ["今日", goalTree.today]
-  ];
-
   roadmapView.innerHTML = "";
-  items.forEach(([label, text]) => {
+  ROADMAP_ORDER.forEach((key) => {
+    const linkedTodos = todos.filter((todo) => todo.roadmapLink === key);
+    const done = linkedTodos.filter((todo) => todo.done).length;
+    const total = linkedTodos.length;
+    const rate = total === 0 ? 0 : Math.round((done / total) * 100);
     const item = document.createElement("article");
     item.className = "roadmap-node";
-    item.innerHTML = `<span>${label}</span><p></p>`;
-    item.querySelector("p").textContent = text || "未設定";
+    item.innerHTML = `
+      <span>${ROADMAP_LABELS[key]}</span>
+      <p></p>
+      <div class="roadmap-rate">${done}/${total} 完了 ${rate}%</div>
+      <div class="linked-todos"></div>
+    `;
+    item.querySelector("p").textContent = goalTree[key] || "未設定";
+    const linkedList = item.querySelector(".linked-todos");
+    linkedTodos.slice(0, 5).forEach((todo) => {
+      const row = document.createElement("div");
+      row.className = `linked-todo ${todo.done ? "done" : ""}`;
+      row.textContent = todo.title;
+      linkedList.appendChild(row);
+    });
     roadmapView.appendChild(item);
   });
 }
@@ -369,6 +450,7 @@ function startEdit(id) {
   categoryInput.value = todo.category;
   priorityInput.value = todo.priority;
   dueInput.value = todo.due;
+  roadmapLinkInput.value = todo.roadmapLink;
   urlInput.value = todo.url;
   memoInput.value = todo.memo;
   formTitle.textContent = "Edit TODO";
@@ -401,6 +483,175 @@ function deleteTodo(id) {
   renderTodos();
 }
 
+function getBackupData() {
+  return {
+    app: "Personal CEO",
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    data: getAllStoredData()
+  };
+}
+
+function exportBackup() {
+  const today = new Date().toISOString().slice(0, 10);
+  const blob = new Blob([JSON.stringify(getBackupData(), null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `personal-ceo-backup-${today}.json`;
+  link.click();
+  URL.revokeObjectURL(url);
+  showDataMessage("JSONを書き出しました。");
+}
+
+function importBackup(file) {
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const backup = JSON.parse(reader.result);
+      const data = backup.data || backup;
+      if (!Array.isArray(data[STORAGE_KEYS.todos])) throw new Error("TODOデータが見つかりません。");
+      if (!confirm("現在のデータをバックアップ内容で復元します。よろしいですか？")) return;
+
+      applyStoredData(data);
+      renderAll();
+      showDataMessage("読み込みが完了しました。");
+    } catch {
+      showDataMessage("不正なJSONです。読み込みできませんでした。", true);
+    }
+  };
+  reader.readAsText(file);
+}
+
+function showDataMessage(message, isError = false) {
+  dataMessage.textContent = message;
+  dataMessage.classList.toggle("error", isError);
+}
+
+function saveSupabaseConfig() {
+  supabaseConfig = {
+    url: supabaseUrlInput.value.trim(),
+    anonKey: supabaseAnonKeyInput.value.trim()
+  };
+  saveData(STORAGE_KEYS.supabase, supabaseConfig);
+  scheduleSupabaseSync();
+  setSyncStatus("Supabase設定を保存しました。");
+}
+
+function renderSupabaseConfig() {
+  supabaseUrlInput.value = supabaseConfig.url || "";
+  supabaseAnonKeyInput.value = supabaseConfig.anonKey || "";
+  const meta = loadData(STORAGE_KEYS.syncMeta, {});
+  if (meta.lastSyncedAt) setSyncStatus(`最終同期: ${formatDateTime(meta.lastSyncedAt)}`);
+}
+
+function hasSupabaseConfig() {
+  return Boolean(supabaseConfig.url && supabaseConfig.anonKey);
+}
+
+function getSupabaseUrl(path) {
+  return `${supabaseConfig.url.replace(/\/$/, "")}/rest/v1/${path}`;
+}
+
+function getSupabaseHeaders(extra = {}) {
+  return {
+    apikey: supabaseConfig.anonKey,
+    Authorization: `Bearer ${supabaseConfig.anonKey}`,
+    "Content-Type": "application/json",
+    ...extra
+  };
+}
+
+async function fetchSupabaseRecord() {
+  if (!hasSupabaseConfig()) return null;
+  const response = await fetch(getSupabaseUrl("app_data?id=eq.dashboard&select=id,data,updated_at"), {
+    headers: getSupabaseHeaders()
+  });
+  if (!response.ok) throw new Error("Supabaseから取得できませんでした。");
+  const rows = await response.json();
+  return rows[0] || null;
+}
+
+async function pushSupabaseData() {
+  if (!hasSupabaseConfig()) return false;
+  const updatedAt = new Date().toISOString();
+  const response = await fetch(getSupabaseUrl("app_data?on_conflict=id"), {
+    method: "POST",
+    headers: getSupabaseHeaders({ Prefer: "resolution=merge-duplicates,return=representation" }),
+    body: JSON.stringify({
+      id: "dashboard",
+      data: getAllStoredData(),
+      updated_at: updatedAt
+    })
+  });
+  if (!response.ok) throw new Error("Supabaseへ保存できませんでした。");
+  localStorage.setItem(STORAGE_KEYS.syncMeta, JSON.stringify({
+    ...loadData(STORAGE_KEYS.syncMeta, {}),
+    updatedAt,
+    lastSyncedAt: updatedAt
+  }));
+  setSyncStatus(`同期成功: ${formatDateTime(updatedAt)}`);
+  return true;
+}
+
+function scheduleSupabaseSync() {
+  if (!hasSupabaseConfig()) return;
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => {
+    pushSupabaseData().catch((error) => setSyncStatus(`同期失敗: ${error.message}`, true));
+  }, 800);
+}
+
+async function syncNow() {
+  try {
+    await pushSupabaseData();
+  } catch (error) {
+    setSyncStatus(`同期失敗: ${error.message}`, true);
+  }
+}
+
+async function testSupabaseConnection() {
+  saveSupabaseConfig();
+  try {
+    await fetchSupabaseRecord();
+    setSyncStatus("接続テスト成功");
+  } catch (error) {
+    setSyncStatus(`接続テスト失敗: ${error.message}`, true);
+  }
+}
+
+async function hydrateFromSupabase() {
+  if (!hasSupabaseConfig()) return;
+  try {
+    const remote = await fetchSupabaseRecord();
+    if (!remote) return;
+    const localMeta = loadData(STORAGE_KEYS.syncMeta, {});
+    const localUpdated = new Date(localMeta.updatedAt || 0).getTime();
+    const remoteUpdated = new Date(remote.updated_at || 0).getTime();
+    if (remoteUpdated > localUpdated) {
+      applyStoredData(remote.data || {}, remote.updated_at);
+      setSyncStatus(`Supabaseから復元: ${formatDateTime(remote.updated_at)}`);
+    } else {
+      await pushSupabaseData();
+    }
+  } catch (error) {
+    setSyncStatus(`同期失敗: ${error.message}`, true);
+  }
+}
+
+function setSyncStatus(message, isError = false) {
+  syncStatus.textContent = message;
+  syncStatus.classList.toggle("error", isError);
+}
+
+function renderAll() {
+  saveTodos();
+  renderSupabaseConfig();
+  renderRoadmap();
+  renderTodos();
+}
+
 todoForm.addEventListener("submit", (event) => {
   event.preventDefault();
   const formData = new FormData(todoForm);
@@ -426,10 +677,20 @@ filterInput.addEventListener("change", renderTodos);
 toggleRoadmapEditButton.addEventListener("click", () => roadmapForm.classList.toggle("hidden"));
 saveGoalTreeButton.addEventListener("click", () => saveGoalTree(true));
 goalFields.forEach((field) => field.addEventListener("blur", () => saveGoalTree(false)));
+exportBackupButton.addEventListener("click", exportBackup);
+importBackupButton.addEventListener("click", () => importBackupInput.click());
+importBackupInput.addEventListener("change", () => importBackup(importBackupInput.files[0]));
+saveSupabaseConfigButton.addEventListener("click", saveSupabaseConfig);
+testSupabaseConnectionButton.addEventListener("click", testSupabaseConnection);
+syncNowButton.addEventListener("click", syncNow);
 
-saveTodos();
-renderRoadmap();
-renderTodos();
+async function initializeApp() {
+  loadAppData();
+  await hydrateFromSupabase();
+  renderAll();
+}
+
+initializeApp();
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {

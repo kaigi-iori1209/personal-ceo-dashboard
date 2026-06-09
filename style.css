@@ -145,6 +145,10 @@ h2 {
   padding: 16px;
 }
 
+.panel + .panel {
+  margin-top: 12px;
+}
+
 .compact-head {
   margin-top: 12px;
 }
@@ -262,7 +266,8 @@ textarea:focus {
 }
 
 .todo-card.done .todo-title,
-.todo-card.done .todo-memo {
+.todo-card.done .todo-memo,
+.linked-todo.done {
   color: var(--muted);
   text-decoration: line-through;
 }
@@ -281,6 +286,10 @@ textarea:focus {
   border-radius: 999px;
   padding: 3px 7px;
   overflow-wrap: anywhere;
+}
+
+.link-badge {
+  color: var(--accent-strong);
 }
 
 .priority-high {
@@ -313,9 +322,11 @@ textarea:focus {
   overflow-wrap: anywhere;
 }
 
-.card-actions {
+.card-actions,
+.data-actions {
   display: flex;
-  gap: 5px;
+  gap: 7px;
+  flex-wrap: wrap;
 }
 
 .open-btn,
@@ -433,6 +444,26 @@ textarea:focus {
   overflow-wrap: anywhere;
 }
 
+.roadmap-rate {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.linked-todos {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.linked-todo {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 7px 8px;
+  color: #d2cec6;
+  font-size: 13px;
+}
+
 .done-log {
   display: grid;
   gap: 10px;
@@ -454,6 +485,26 @@ textarea:focus {
   grid-template-columns: 1fr auto;
   gap: 10px;
   align-items: start;
+}
+
+.data-panel summary {
+  cursor: pointer;
+  color: var(--accent-strong);
+  font-weight: 700;
+}
+
+.data-actions {
+  margin-top: 12px;
+}
+
+.status-message {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.status-message.error {
+  color: var(--danger);
 }
 
 @media (max-width: 768px) {

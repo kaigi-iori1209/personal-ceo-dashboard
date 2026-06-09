@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#151515">
-  <title>TODO Roadmap</title>
+  <title>Personal CEO</title>
   <link rel="manifest" href="./manifest.json">
   <link rel="stylesheet" href="style.css">
 </head>
@@ -13,7 +13,7 @@
     <header class="header">
       <div>
         <p class="eyebrow">Personal CEO Workspace</p>
-        <h1>TODO & Roadmap</h1>
+        <h1>Personal CEO</h1>
       </div>
       <div class="summary">
         <span id="totalCount">未完了 0</span>
@@ -92,7 +92,20 @@
               </select>
             </label>
           </div>
-          <label>期限<input id="dueInput" name="due" type="date"></label>
+          <div class="grid-2">
+            <label>期限<input id="dueInput" name="due" type="date"></label>
+            <label>紐付け先
+              <select id="roadmapLinkInput" name="roadmapLink">
+                <option value="none">なし</option>
+                <option value="today">今日</option>
+                <option value="thisMonth">今月</option>
+                <option value="threeMonths">3ヶ月後</option>
+                <option value="sixMonths">半年後</option>
+                <option value="oneYear">1年後</option>
+                <option value="finalGoal">最終目標</option>
+              </select>
+            </label>
+          </div>
           <label>URL<input id="urlInput" name="url" type="url" placeholder="https://example.com"></label>
           <label>メモ<textarea id="memoInput" name="memo" rows="4" placeholder="補足やリンクなど"></textarea></label>
           <button id="submitButton" type="submit">追加する</button>
@@ -131,6 +144,30 @@
         </div>
         <div id="doneLog" class="done-log"></div>
       </section>
+
+      <details class="panel data-panel">
+        <summary>データ管理</summary>
+        <div class="data-actions">
+          <button id="exportBackup" type="button">書き出し</button>
+          <button id="importBackupButton" type="button" class="secondary">読み込み</button>
+          <input id="importBackupInput" type="file" accept="application/json,.json" hidden>
+        </div>
+        <p id="dataMessage" class="status-message"></p>
+      </details>
+
+      <details class="panel data-panel">
+        <summary>Supabase同期</summary>
+        <div class="grid-2">
+          <label>Project URL<input id="supabaseUrlInput" type="url" placeholder="https://xxxx.supabase.co"></label>
+          <label>Publishable Key<input id="supabaseAnonKeyInput" type="password" placeholder="コードには直書きしない"></label>
+        </div>
+        <div class="data-actions">
+          <button id="saveSupabaseConfig" type="button" class="secondary">設定を保存</button>
+          <button id="testSupabaseConnection" type="button" class="secondary">接続テスト</button>
+          <button id="syncNow" type="button">今すぐ同期</button>
+        </div>
+        <p id="syncStatus" class="status-message">最終同期: 未実行</p>
+      </details>
     </section>
   </main>
 
