@@ -84,9 +84,6 @@ function saveData(key, value) {
       hasPendingChanges: true
     }));
   }
-  if (!suppressSync && key !== STORAGE_KEYS.supabase && key !== STORAGE_KEYS.syncMeta) {
-    scheduleSupabaseSync();
-  }
 }
 
 function loadAppData() {
@@ -114,6 +111,10 @@ function getAllStoredData() {
 }
 
 function applyStoredData(data, updatedAt = new Date().toISOString()) {
+  if (wouldOverwriteWithEmptyData(data)) {
+    setSyncStatus("空データのためlocalStorageは上書きしませんでした。", true);
+    return false;
+  }
   suppressSync = true;
   Object.entries(data).forEach(([key, value]) => {
     if (Object.values(STORAGE_KEYS).includes(key) && key !== STORAGE_KEYS.syncMeta) {
@@ -123,10 +124,14 @@ function applyStoredData(data, updatedAt = new Date().toISOString()) {
   localStorage.setItem(STORAGE_KEYS.syncMeta, JSON.stringify({ updatedAt }));
   suppressSync = false;
   loadAppData();
+  return true;
 }
 
 function mergeStoredData(localData, remoteData) {
-  const merged = { ...localData, ...remoteData };
+  const merged = { ...localData };
+  Object.entries(remoteData).forEach(([key, value]) => {
+    if (!isEmptySavedValue(value)) merged[key] = value;
+  });
   const todosById = new Map();
   [...(localData[STORAGE_KEYS.todos] || []), ...(remoteData[STORAGE_KEYS.todos] || [])].forEach((todo) => {
     const normalized = normalizeTodo(todo);
@@ -135,6 +140,22 @@ function mergeStoredData(localData, remoteData) {
   });
   merged[STORAGE_KEYS.todos] = Array.from(todosById.values());
   return merged;
+}
+
+function wouldOverwriteWithEmptyData(data) {
+  const localTodos = loadData(STORAGE_KEYS.todos, []);
+  const localGoalTree = loadData(STORAGE_KEYS.goalTree, {});
+  const remoteTodos = data[STORAGE_KEYS.todos];
+  const remoteGoalTree = data[STORAGE_KEYS.goalTree];
+  const hasLocalData = (Array.isArray(localTodos) && localTodos.length > 0) || !isEmptySavedValue(localGoalTree);
+  const remoteIsEmpty = isEmptySavedValue(remoteTodos) && isEmptySavedValue(remoteGoalTree);
+  return hasLocalData && remoteIsEmpty;
+}
+
+function isEmptySavedValue(value) {
+  if (Array.isArray(value)) return value.length === 0;
+  if (value && typeof value === "object") return Object.values(value).every((item) => !item);
+  return !value;
 }
 
 function chooseNewerTodo(a, b) {
@@ -573,7 +594,6 @@ function saveSupabaseConfig() {
     anonKey: supabaseAnonKeyInput.value.trim()
   };
   saveData(STORAGE_KEYS.supabase, supabaseConfig);
-  scheduleSupabaseSync();
   setSyncStatus("Supabase設定を保存しました。");
 }
 
@@ -582,8 +602,8 @@ function renderSupabaseConfig() {
   supabaseAnonKeyInput.value = supabaseConfig.anonKey || "";
   const meta = loadData(STORAGE_KEYS.syncMeta, {});
   const pendingText = meta.hasPendingChanges ? " / 未同期の変更あり" : "";
-  if (meta.lastSyncedAt) setSyncStatus(`自動同期: ON / 最終同期: ${formatDateTime(meta.lastSyncedAt)}${pendingText}`);
-  else setSyncStatus(`自動同期: ON / 最終同期: 未実行${pendingText}`);
+  if (meta.lastSyncedAt) setSyncStatus(`自動同期: OFF（安全モード） / 最終同期: ${formatDateTime(meta.lastSyncedAt)}${pendingText}`);
+  else setSyncStatus(`自動同期: OFF（安全モード） / 最終同期: 未実行${pendingText}`);
 }
 
 function hasSupabaseConfig() {
@@ -648,12 +668,7 @@ async function pushSupabaseData(allowWhileSyncing = false) {
 }
 
 function scheduleSupabaseSync() {
-  if (!hasSupabaseConfig()) return;
-  setSyncStatus(navigator.onLine ? "未同期の変更あり" : "未同期の変更あり（オフライン）", !navigator.onLine);
-  clearTimeout(syncTimer);
-  syncTimer = setTimeout(() => {
-    pushSupabaseData().catch((error) => setSyncStatus(`同期失敗: ${error.message}`, true));
-  }, 800);
+  return false;
 }
 
 async function syncNow() {
@@ -732,6 +747,11 @@ async function pullMergeAndPushSupabase(shouldShowMessage = true) {
   const remoteUpdated = getValidTime(remote.updated_at);
   const localData = getAllStoredData();
   const remoteData = remote.data || {};
+  createLocalSafetyBackup(localData);
+  if (wouldOverwriteWithEmptyData(remoteData)) {
+    await pushSupabaseData(true);
+    return "Supabaseが空のため、localStorageを保持して同期しました。";
+  }
   const mergedData = mergeStoredData(localData, remoteData);
   const message = !localUpdated || remoteUpdated > localUpdated
     ? "Supabaseから取得し、ローカルとマージしました。"
@@ -747,6 +767,13 @@ async function pullMergeAndPushSupabase(shouldShowMessage = true) {
   }
 }
 
+function createLocalSafetyBackup(data) {
+  localStorage.setItem("personalCeo.lastSafetyBackup", JSON.stringify({
+    createdAt: new Date().toISOString(),
+    data
+  }));
+}
+
 function setSyncStatus(message, isError = false) {
   syncStatus.textContent = message;
   syncStatus.classList.toggle("error", isError);
@@ -754,11 +781,7 @@ function setSyncStatus(message, isError = false) {
 
 function startAutoSync() {
   clearInterval(periodicSyncTimer);
-  periodicSyncTimer = setInterval(() => {
-    pullMergeAndPushSupabase(false)
-      .then(() => renderAll())
-      .catch((error) => setSyncStatus(`同期失敗: ${error.message}`, true));
-  }, 60000);
+  setSyncStatus("自動同期: OFF（安全モード）");
 }
 
 function renderAll() {
@@ -802,30 +825,10 @@ syncNowButton.addEventListener("click", syncNow);
 
 async function initializeApp() {
   loadAppData();
-  await hydrateFromSupabase();
   renderAll();
-  startAutoSync();
 }
 
 initializeApp();
-
-document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible") {
-    pullMergeAndPushSupabase(false)
-      .then(() => renderAll())
-      .catch((error) => setSyncStatus(`同期失敗: ${error.message}`, true));
-  }
-});
-
-window.addEventListener("online", () => {
-  pullMergeAndPushSupabase(false)
-    .then(() => renderAll())
-    .catch((error) => setSyncStatus(`同期失敗: ${error.message}`, true));
-});
-
-window.addEventListener("offline", () => {
-  setSyncStatus("未同期の変更あり（オフライン）", true);
-});
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {

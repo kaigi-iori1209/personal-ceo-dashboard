@@ -3,6 +3,4 @@
 - 2026-06-09: HTML/CSS/JavaScriptのみでTODO・ロードマップ可視化ツールを作成。
 - 2026-06-09: PWA、下部タブUI、Today/Tasks/Roadmap/Log構成を追加。
 - 2026-06-09: JSONバックアップ、復元、TODOとRoadmapの紐付け、Supabase同期を追加。
-- 2026-06-09: Supabase Publishable Key向けにGETテストとHTTP詳細エラー表示を調整。
-- 2026-06-09: 今すぐ同期でSupabase取得、updated_at比較、TODOのidマージ、再描画を行うよう修正。
-- 2026-06-09: 起動時、保存時、60秒ごと、画面復帰時、オンライン復帰時のSupabase自動同期を追加。
+- 2026-06-09: Supabase同期を安全モードへ変更。自動同期を停止し、手動同期のみ許可。空データ上書き防止と同期前バックアップを追加。
