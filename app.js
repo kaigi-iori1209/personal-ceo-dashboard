@@ -121,6 +121,7 @@ function applyStoredData(data, updatedAt = new Date().toISOString()) {
 
 function saveTodos() {
   saveData(STORAGE_KEYS.todos, todos);
+  todos = loadData(STORAGE_KEYS.todos, []).map(normalizeTodo);
 }
 
 function normalizeTodo(todo) {
@@ -658,7 +659,6 @@ function setSyncStatus(message, isError = false) {
 }
 
 function renderAll() {
-  saveTodos();
   renderSupabaseConfig();
   renderRoadmap();
   renderTodos();
@@ -674,12 +674,13 @@ todoForm.addEventListener("submit", (event) => {
     ));
   } else {
     todos.unshift(createTodo(formData));
+    filterInput.value = "all";
   }
 
   saveTodos();
   resetForm();
-  renderTodos();
   switchTab("tasks");
+  renderAll();
 });
 
 tabs.forEach((tab) => tab.addEventListener("click", () => switchTab(tab.dataset.tab)));
