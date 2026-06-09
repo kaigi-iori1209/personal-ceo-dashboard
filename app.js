@@ -61,6 +61,8 @@ let todos = [];
 let goalTree = {};
 let supabaseConfig = {};
 let syncTimer = null;
+let periodicSyncTimer = null;
+let isSyncing = false;
 let suppressSync = false;
 let editingId = null;
 
@@ -76,7 +78,11 @@ function loadData(key, fallback) {
 function saveData(key, value) {
   localStorage.setItem(key, JSON.stringify(value));
   if (key !== STORAGE_KEYS.syncMeta) {
-    localStorage.setItem(STORAGE_KEYS.syncMeta, JSON.stringify({ updatedAt: new Date().toISOString() }));
+    localStorage.setItem(STORAGE_KEYS.syncMeta, JSON.stringify({
+      ...loadData(STORAGE_KEYS.syncMeta, {}),
+      updatedAt: new Date().toISOString(),
+      hasPendingChanges: true
+    }));
   }
   if (!suppressSync && key !== STORAGE_KEYS.supabase && key !== STORAGE_KEYS.syncMeta) {
     scheduleSupabaseSync();
@@ -575,7 +581,9 @@ function renderSupabaseConfig() {
   supabaseUrlInput.value = supabaseConfig.url || "";
   supabaseAnonKeyInput.value = supabaseConfig.anonKey || "";
   const meta = loadData(STORAGE_KEYS.syncMeta, {});
-  if (meta.lastSyncedAt) setSyncStatus(`最終同期: ${formatDateTime(meta.lastSyncedAt)}`);
+  const pendingText = meta.hasPendingChanges ? " / 未同期の変更あり" : "";
+  if (meta.lastSyncedAt) setSyncStatus(`自動同期: ON / 最終同期: ${formatDateTime(meta.lastSyncedAt)}${pendingText}`);
+  else setSyncStatus(`自動同期: ON / 最終同期: 未実行${pendingText}`);
 }
 
 function hasSupabaseConfig() {
@@ -605,30 +613,43 @@ async function fetchSupabaseRecord() {
   return rows[0] || null;
 }
 
-async function pushSupabaseData() {
+async function pushSupabaseData(allowWhileSyncing = false) {
   if (!hasSupabaseConfig()) return false;
+  if (isSyncing && !allowWhileSyncing) return false;
+  if (!navigator.onLine) {
+    setSyncStatus("未同期の変更あり（オフライン）", true);
+    return false;
+  }
+  isSyncing = true;
+  setSyncStatus("同期中...");
   const updatedAt = new Date().toISOString();
-  const response = await fetch(getSupabaseUrl("app_data?on_conflict=id"), {
-    method: "POST",
-    headers: getSupabaseHeaders({ Prefer: "resolution=merge-duplicates,return=representation" }),
-    body: JSON.stringify({
-      id: "dashboard",
-      data: getAllStoredData(),
-      updated_at: updatedAt
-    })
-  });
-  if (!response.ok) throw new Error(await getSupabaseErrorMessage(response));
-  localStorage.setItem(STORAGE_KEYS.syncMeta, JSON.stringify({
-    ...loadData(STORAGE_KEYS.syncMeta, {}),
-    updatedAt,
-    lastSyncedAt: updatedAt
-  }));
-  setSyncStatus(`同期成功: ${formatDateTime(updatedAt)}`);
-  return true;
+  try {
+    const response = await fetch(getSupabaseUrl("app_data?on_conflict=id"), {
+      method: "POST",
+      headers: getSupabaseHeaders({ Prefer: "resolution=merge-duplicates,return=representation" }),
+      body: JSON.stringify({
+        id: "dashboard",
+        data: getAllStoredData(),
+        updated_at: updatedAt
+      })
+    });
+    if (!response.ok) throw new Error(await getSupabaseErrorMessage(response));
+    localStorage.setItem(STORAGE_KEYS.syncMeta, JSON.stringify({
+      ...loadData(STORAGE_KEYS.syncMeta, {}),
+      updatedAt,
+      lastSyncedAt: updatedAt,
+      hasPendingChanges: false
+    }));
+    setSyncStatus(`同期成功: ${formatDateTime(updatedAt)}`);
+    return true;
+  } finally {
+    isSyncing = false;
+  }
 }
 
 function scheduleSupabaseSync() {
   if (!hasSupabaseConfig()) return;
+  setSyncStatus(navigator.onLine ? "未同期の変更あり" : "未同期の変更あり（オフライン）", !navigator.onLine);
   clearTimeout(syncTimer);
   syncTimer = setTimeout(() => {
     pushSupabaseData().catch((error) => setSyncStatus(`同期失敗: ${error.message}`, true));
@@ -639,7 +660,7 @@ async function syncNow() {
   try {
     const result = await pullMergeAndPushSupabase();
     renderAll();
-    setSyncStatus(result);
+    if (result) setSyncStatus(result);
   } catch (error) {
     setSyncStatus(`同期失敗: ${error.message}`, true);
   }
@@ -669,7 +690,12 @@ async function getSupabaseErrorMessage(response) {
 
 async function hydrateFromSupabase() {
   if (!hasSupabaseConfig()) return;
+  if (!navigator.onLine) {
+    setSyncStatus("未同期の変更あり（オフライン）", true);
+    return;
+  }
   try {
+    setSyncStatus("同期中...");
     const remote = await fetchSupabaseRecord();
     if (!remote) return;
     const localMeta = loadData(STORAGE_KEYS.syncMeta, {});
@@ -687,9 +713,17 @@ async function hydrateFromSupabase() {
 }
 
 async function pullMergeAndPushSupabase(shouldShowMessage = true) {
+  if (isSyncing) return "同期中...";
+  if (!navigator.onLine) {
+    setSyncStatus("未同期の変更あり（オフライン）", true);
+    return "未同期の変更あり（オフライン）";
+  }
+  isSyncing = true;
+  setSyncStatus("同期中...");
+  try {
   const remote = await fetchSupabaseRecord();
   if (!remote) {
-    await pushSupabaseData();
+    await pushSupabaseData(true);
     return "Supabaseへ新規同期しました。";
   }
 
@@ -704,14 +738,27 @@ async function pullMergeAndPushSupabase(shouldShowMessage = true) {
     : "ローカルとSupabaseをマージしました。";
 
   applyStoredData(mergedData, new Date(Math.max(localUpdated, remoteUpdated, Date.now())).toISOString());
-  await pushSupabaseData();
+  await pushSupabaseData(true);
+  if (shouldShowMessage) setSyncStatus(message);
   if (shouldShowMessage) return message;
   return "";
+  } finally {
+    isSyncing = false;
+  }
 }
 
 function setSyncStatus(message, isError = false) {
   syncStatus.textContent = message;
   syncStatus.classList.toggle("error", isError);
+}
+
+function startAutoSync() {
+  clearInterval(periodicSyncTimer);
+  periodicSyncTimer = setInterval(() => {
+    pullMergeAndPushSupabase(false)
+      .then(() => renderAll())
+      .catch((error) => setSyncStatus(`同期失敗: ${error.message}`, true));
+  }, 60000);
 }
 
 function renderAll() {
@@ -757,9 +804,28 @@ async function initializeApp() {
   loadAppData();
   await hydrateFromSupabase();
   renderAll();
+  startAutoSync();
 }
 
 initializeApp();
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") {
+    pullMergeAndPushSupabase(false)
+      .then(() => renderAll())
+      .catch((error) => setSyncStatus(`同期失敗: ${error.message}`, true));
+  }
+});
+
+window.addEventListener("online", () => {
+  pullMergeAndPushSupabase(false)
+    .then(() => renderAll())
+    .catch((error) => setSyncStatus(`同期失敗: ${error.message}`, true));
+});
+
+window.addEventListener("offline", () => {
+  setSyncStatus("未同期の変更あり（オフライン）", true);
+});
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
