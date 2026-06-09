@@ -551,7 +551,7 @@ function hasSupabaseConfig() {
 }
 
 function getSupabaseUrl(path) {
-  return `${supabaseConfig.url.replace(/\/$/, "")}/rest/v1/${path}`;
+  return `${supabaseConfig.url.trim().replace(/\/+$/, "")}/rest/v1/${path}`;
 }
 
 function getSupabaseHeaders(extra = {}) {
@@ -565,10 +565,10 @@ function getSupabaseHeaders(extra = {}) {
 
 async function fetchSupabaseRecord() {
   if (!hasSupabaseConfig()) return null;
-  const response = await fetch(getSupabaseUrl("app_data?id=eq.dashboard&select=id,data,updated_at"), {
+  const response = await fetch(getSupabaseUrl("app_data?id=eq.dashboard"), {
     headers: getSupabaseHeaders()
   });
-  if (!response.ok) throw new Error("Supabaseから取得できませんでした。");
+  if (!response.ok) throw new Error(await getSupabaseErrorMessage(response));
   const rows = await response.json();
   return rows[0] || null;
 }
@@ -585,7 +585,7 @@ async function pushSupabaseData() {
       updated_at: updatedAt
     })
   });
-  if (!response.ok) throw new Error("Supabaseへ保存できませんでした。");
+  if (!response.ok) throw new Error(await getSupabaseErrorMessage(response));
   localStorage.setItem(STORAGE_KEYS.syncMeta, JSON.stringify({
     ...loadData(STORAGE_KEYS.syncMeta, {}),
     updatedAt,
@@ -619,6 +619,18 @@ async function testSupabaseConnection() {
   } catch (error) {
     setSyncStatus(`接続テスト失敗: ${error.message}`, true);
   }
+}
+
+async function getSupabaseErrorMessage(response) {
+  const body = await response.text();
+  let detail = body;
+  try {
+    const json = JSON.parse(body);
+    detail = json.message || json.error_description || json.error || body;
+  } catch {
+    detail = body || response.statusText;
+  }
+  return `HTTP ${response.status}: ${detail}`;
 }
 
 async function hydrateFromSupabase() {
