@@ -119,6 +119,32 @@ function applyStoredData(data, updatedAt = new Date().toISOString()) {
   loadAppData();
 }
 
+function mergeStoredData(localData, remoteData) {
+  const merged = { ...localData, ...remoteData };
+  const todosById = new Map();
+  [...(localData[STORAGE_KEYS.todos] || []), ...(remoteData[STORAGE_KEYS.todos] || [])].forEach((todo) => {
+    const normalized = normalizeTodo(todo);
+    const current = todosById.get(normalized.id);
+    todosById.set(normalized.id, chooseNewerTodo(current, normalized));
+  });
+  merged[STORAGE_KEYS.todos] = Array.from(todosById.values());
+  return merged;
+}
+
+function chooseNewerTodo(a, b) {
+  if (!a) return b;
+  const aTime = getTodoUpdatedTime(a);
+  const bTime = getTodoUpdatedTime(b);
+  return bTime >= aTime ? b : a;
+}
+
+function getTodoUpdatedTime(todo) {
+  return Math.max(
+    getValidTime(todo.completedAt),
+    getValidTime(todo.createdAt)
+  );
+}
+
 function saveTodos() {
   saveData(STORAGE_KEYS.todos, todos);
   todos = loadData(STORAGE_KEYS.todos, []).map(normalizeTodo);
@@ -423,6 +449,11 @@ function getDateTime(value) {
   return value ? new Date(value) : new Date(0);
 }
 
+function getValidTime(value) {
+  const time = value ? new Date(value).getTime() : 0;
+  return Number.isFinite(time) ? time : 0;
+}
+
 function formatDate(value) {
   return new Date(value).toLocaleDateString("ja-JP", { year: "numeric", month: "2-digit", day: "2-digit" });
 }
@@ -606,7 +637,9 @@ function scheduleSupabaseSync() {
 
 async function syncNow() {
   try {
-    await pushSupabaseData();
+    const result = await pullMergeAndPushSupabase();
+    renderAll();
+    setSyncStatus(result);
   } catch (error) {
     setSyncStatus(`同期失敗: ${error.message}`, true);
   }
@@ -640,17 +673,40 @@ async function hydrateFromSupabase() {
     const remote = await fetchSupabaseRecord();
     if (!remote) return;
     const localMeta = loadData(STORAGE_KEYS.syncMeta, {});
-    const localUpdated = new Date(localMeta.updatedAt || 0).getTime();
-    const remoteUpdated = new Date(remote.updated_at || 0).getTime();
-    if (remoteUpdated > localUpdated) {
+    const localUpdated = getValidTime(localMeta.updatedAt);
+    const remoteUpdated = getValidTime(remote.updated_at);
+    if (!localUpdated || remoteUpdated > localUpdated) {
       applyStoredData(remote.data || {}, remote.updated_at);
       setSyncStatus(`Supabaseから復元: ${formatDateTime(remote.updated_at)}`);
     } else {
-      await pushSupabaseData();
+      await pullMergeAndPushSupabase(false);
     }
   } catch (error) {
     setSyncStatus(`同期失敗: ${error.message}`, true);
   }
+}
+
+async function pullMergeAndPushSupabase(shouldShowMessage = true) {
+  const remote = await fetchSupabaseRecord();
+  if (!remote) {
+    await pushSupabaseData();
+    return "Supabaseへ新規同期しました。";
+  }
+
+  const localMeta = loadData(STORAGE_KEYS.syncMeta, {});
+  const localUpdated = getValidTime(localMeta.updatedAt);
+  const remoteUpdated = getValidTime(remote.updated_at);
+  const localData = getAllStoredData();
+  const remoteData = remote.data || {};
+  const mergedData = mergeStoredData(localData, remoteData);
+  const message = !localUpdated || remoteUpdated > localUpdated
+    ? "Supabaseから取得し、ローカルとマージしました。"
+    : "ローカルとSupabaseをマージしました。";
+
+  applyStoredData(mergedData, new Date(Math.max(localUpdated, remoteUpdated, Date.now())).toISOString());
+  await pushSupabaseData();
+  if (shouldShowMessage) return message;
+  return "";
 }
 
 function setSyncStatus(message, isError = false) {
