@@ -430,3 +430,9 @@ goalFields.forEach((field) => field.addEventListener("blur", () => saveGoalTree(
 saveTodos();
 renderRoadmap();
 renderTodos();
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("./service-worker.js");
+  });
+}
